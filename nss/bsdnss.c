@@ -37,6 +37,11 @@
 
 #define BUFFER_SIZE 1024
 
+struct name_list {
+	struct name_list *next;
+	char *name;
+};
+
 NSS_METHOD_PROTOTYPE(__nss_compat_getgrnam_r);
 NSS_METHOD_PROTOTYPE(__nss_compat_getgrgid_r);
 NSS_METHOD_PROTOTYPE(__nss_compat_getgrent_r);
@@ -235,6 +240,8 @@ nss_status_t NSS_NAME(getnetgrent_r)(struct __netgrent *result,
 	enum nss_status rv;
 	int *errorp;
 	int ret;
+	struct name_list *netlist;
+	struct __netgrent *netgr;
 
 	fn = mdata;
 	hostp = va_arg(ap, char **);
@@ -248,17 +255,41 @@ nss_status_t NSS_NAME(getnetgrent_r)(struct __netgrent *result,
 		*errorp = 0;
 		rv = fn(_netgr_result, buffer, bufsize,
 		    errorp);
-		//*(struct __netgrent **)retval = _netgr_result;
-		*hostp = (char *)((struct __netgrent *)_netgr_result)->val.triple.host;
-		*userp = (char *)((struct __netgrent *)_netgr_result)->val.triple.user;
-		*domp = (char *)((struct __netgrent *)_netgr_result)->val.triple.domain;
 
 		ret = __nss_compat_result(rv, *errorp);
-		if (ret != NS_SUCCESS)
-			return (ret);
+		netgr = (struct __netgrent *)_netgr_result;
+
+		switch (ret){
+			case NS_SUCCESS:
+				if (netgr->type == group_val){
+					netlist = (struct name_list *)malloc(sizeof(struct name_list));
+					netlist->next = netgr->needed_groups;
+					netlist->name = strdup(netgr->val.group);
+					netgr->needed_groups = netlist;
+					ret = NS_TRYAGAIN;
+				}else{
+					*hostp = (char *)netgr->val.triple.host;
+					*userp = (char *)netgr->val.triple.user;
+					*domp = (char *)netgr->val.triple.domain;
+					return (NS_SUCCESS);
+				}
+				break;
+			case NS_RETURN:
+				netlist = netgr->needed_groups;
+				if(netlist != NULL){
+					NSS_NAME(setnetgrent)(netlist->name, netgr);
+					netgr->needed_groups = netlist->next;
+					free(netlist->name);
+					free(netlist);
+					ret = NS_TRYAGAIN;
+				}
+				break;
+			default:
+				;
+		}
 	} while (ret == NS_TRYAGAIN);
 
-	return (NS_SUCCESS);
+	return ret;
 }
 
 int __nss_compat_setnetgrent(void *retval, void *mdata, va_list ap)
